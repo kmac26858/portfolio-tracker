@@ -2,14 +2,7 @@ import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer } from "recharts";
 import { Plus, Trash2, ChevronDown, ChevronRight, Download, Upload, X, TrendingUp, TrendingDown, DollarSign, Users, LogOut, Lock, Pencil, FileSpreadsheet, Settings } from "lucide-react";
 
-// ── Dummy last prices (replace with Yahoo Finance MCP later) ──────────────────
-const DUMMY_PRICES = {
-  AAPL: 213.49, MSFT: 415.32, GOOGL: 175.84, AMZN: 196.21, NVDA: 131.38,
-  TSLA: 248.50, META: 562.14, BRK: 413.00, JPM: 245.17, V: 330.55,
-  SPY: 537.20, QQQ: 462.80, VTI: 268.14, VOO: 493.72, IWM: 208.45,
-  SCHD: 79.34, VGT: 582.90, ARKK: 48.12, GLD: 231.05, BND: 72.88,
-};
-const getPrice = (ticker) => DUMMY_PRICES[ticker.toUpperCase()] ?? 100.0;
+// prices are fetched live from /api/prices — see App component
 
 const BROKERAGES = ["Robinhood", "eTrade", "Fidelity", "Schwab", "Vanguard"];
 const CHART_COLORS = ["#00ff88", "#00c4ff", "#ff6b35", "#ffd700", "#c084fc", "#fb7185", "#34d399", "#f472b6"];
@@ -592,7 +585,8 @@ function EditPositionModal({ lot, users, onSave, onClose }) {
 }
 
 // ── Positions Tab ─────────────────────────────────────────────────────────────
-function PositionsTab({ positions, users, onEdit }) {
+function PositionsTab({ positions, users, onEdit, prices }) {
+  const getPrice = (ticker) => prices[ticker] ?? 0;
   const [expanded, setExpanded] = useState({});
   const [editingLot, setEditingLot] = useState(null);
   const toggle = (t) => setExpanded((e) => ({ ...e, [t]: !e[t] }));
@@ -612,8 +606,8 @@ function PositionsTab({ positions, users, onEdit }) {
       const gainLoss = currentValue - totalCost;
       const gainPct = totalCost > 0 ? (gainLoss / totalCost) * 100 : 0;
       return { ticker, lots, totalShares, totalCost, avgCost, lastPrice, currentValue, gainLoss, gainPct };
-    });
-  }, [positions]);
+    }).sort((a, b) => b.currentValue - a.currentValue);
+  }, [positions, prices]);
 
   if (grouped.length === 0) {
     return (
@@ -648,9 +642,9 @@ function PositionsTab({ positions, users, onEdit }) {
             <div style={styles.td}>{fmtDollar(row.avgCost)}</div>
             <div style={styles.td}>{fmtDollar(row.totalCost)}</div>
             <div style={styles.td}>{fmtDollar(row.currentValue)}</div>
-            <div style={{ ...styles.td, color: row.gainLoss >= 0 ? "#00ff88" : "#ff6b35" }}>
-              {fmtDollar(row.gainLoss)}
-              <span style={{ fontSize: 11, marginLeft: 4 }}>{fmtPct(row.gainPct)}</span>
+            <div style={{ ...styles.td, color: row.gainLoss >= 0 ? "#00ff88" : "#ff6b35", display: "flex", alignItems: "baseline", gap: 6 }}>
+              <span>{fmtDollar(row.gainLoss)}</span>
+              <span style={{ fontSize: 11, opacity: 0.8 }}>{fmtPct(row.gainPct)}</span>
             </div>
           </div>
           {expanded[row.ticker] && (
@@ -703,7 +697,8 @@ function PositionsTab({ positions, users, onEdit }) {
 }
 
 // ── Dashboard Tab ─────────────────────────────────────────────────────────────
-function DashboardTab({ positions, users }) {
+function DashboardTab({ positions, users, prices }) {
+  const getPrice = (ticker) => prices[ticker] ?? 0;
   const grouped = useMemo(() => {
     const map = {};
     positions.forEach((p) => {
@@ -733,12 +728,14 @@ function DashboardTab({ positions, users }) {
     return Object.entries(map).map(([name, value]) => ({ name, value: parseFloat(value.toFixed(2)) }));
   }, [positions]);
 
-  const byTicker = useMemo(() =>
-    Object.entries(grouped).map(([ticker, v]) => ({
-      name: ticker, value: parseFloat((v.shares * getPrice(ticker)).toFixed(2))
-    })).sort((a, b) => b.value - a.value),
-    [grouped]
-  );
+  const byTicker = useMemo(() => {
+    const sorted = Object.entries(grouped)
+      .map(([ticker, v]) => ({ name: ticker, value: parseFloat((v.shares * getPrice(ticker)).toFixed(2)) }))
+      .sort((a, b) => b.value - a.value);
+    if (sorted.length <= 10) return sorted;
+    const othersValue = sorted.slice(10).reduce((s, d) => s + d.value, 0);
+    return [...sorted.slice(0, 10), { name: "Others", value: parseFloat(othersValue.toFixed(2)) }];
+  }, [grouped]);
 
   const byType = useMemo(() => {
     const map = {};
@@ -774,6 +771,7 @@ function DashboardTab({ positions, users }) {
         <KPI label="TOTAL VALUE" value={fmtDollar(totalValue)} icon={<DollarSign size={14} />} />
         <KPI label="TOTAL COST" value={fmtDollar(totalCost)} icon={<DollarSign size={14} />} />
         <KPI label="TOTAL GAIN/LOSS" value={fmtDollar(overallGL)}
+          subValue={fmtPct(totalCost > 0 ? (overallGL / totalCost) * 100 : 0)}
           accent={overallGL >= 0 ? "#00ff88" : "#ff6b35"}
           icon={overallGL >= 0 ? <TrendingUp size={14} /> : <TrendingDown size={14} />} />
         <KPI label="INVESTORS" value={users.length} icon={<Users size={14} />} />
@@ -788,25 +786,31 @@ function DashboardTab({ positions, users }) {
   );
 }
 
-function KPI({ label, value, accent = "#00c4ff", icon }) {
+function KPI({ label, value, subValue, accent = "#00c4ff", icon }) {
   return (
     <div style={styles.kpiCard}>
       <div style={{ display: "flex", alignItems: "center", gap: 6, color: "#475569", marginBottom: 8 }}>
         <span style={{ color: accent }}>{icon}</span>
         <span style={styles.label}>{label}</span>
       </div>
-      <div style={{ fontSize: 22, fontFamily: "monospace", color: accent, fontWeight: 700 }}>{value}</div>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+        <div style={{ fontSize: 22, fontFamily: "monospace", color: accent, fontWeight: 700 }}>{value}</div>
+        {subValue && <div style={{ fontSize: 12, fontFamily: "monospace", color: accent, opacity: 0.7 }}>{subValue}</div>}
+      </div>
     </div>
   );
 }
 
-const CustomTooltip = ({ active, payload }) => {
+const makeTooltip = (data) => ({ active, payload }) => {
   if (!active || !payload?.length) return null;
   const { name, value } = payload[0];
+  const total = data.reduce((s, d) => s + d.value, 0);
+  const pct = total > 0 ? ((value / total) * 100).toFixed(1) : "0.0";
   return (
     <div style={{ background: "#0f172a", border: "1px solid #1e293b", padding: "8px 14px", borderRadius: 6, fontFamily: "monospace", fontSize: 12 }}>
-      <div style={{ color: "#94a3b8" }}>{name}</div>
+      <div style={{ color: "#94a3b8", marginBottom: 4 }}>{name}</div>
       <div style={{ color: "#00ff88" }}>{fmtDollar(value)}</div>
+      <div style={{ color: "#475569", fontSize: 11, marginTop: 2 }}>{pct}% of total</div>
     </div>
   );
 };
@@ -821,7 +825,7 @@ function ChartCard({ title, data }) {
             paddingAngle={2} dataKey="value" stroke="none">
             {data.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
           </Pie>
-          <Tooltip content={<CustomTooltip />} />
+          <Tooltip content={makeTooltip(data)} />
           <Legend
             formatter={(val) => <span style={{ fontFamily: "monospace", fontSize: 11, color: "#94a3b8" }}>{val}</span>}
             iconType="circle" iconSize={8}
@@ -841,6 +845,7 @@ export default function App() {
   // Portfolio state
   const [users, setUsers] = useState(null);        // null = onboarding not done yet
   const [positions, setPositions] = useState([]);
+  const [prices, setPrices] = useState({});        // { AAPL: 213.49, ... }
   const [activeTab, setActiveTab] = useState(0);
   const [showAdd, setShowAdd] = useState(false);
   const [showSell, setShowSell] = useState(false);
@@ -889,6 +894,18 @@ export default function App() {
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, []);
+
+  // ── Fetch live prices whenever the set of held tickers changes ───────────────
+  useEffect(() => {
+    const tickers = [...new Set(positions.map((p) => p.ticker))];
+    if (tickers.length === 0) return;
+
+    fetch(`/api/prices?tickers=${tickers.join(",")}`, { credentials: "include" })
+      .then((r) => r.json())
+      .then((data) => setPrices((prev) => ({ ...prev, ...data })))
+      .catch(() => {}); // keep showing last known prices on error
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [positions.map((p) => p.ticker).sort().join(",")]);
 
   // ── Auth callbacks ───────────────────────────────────────────────────────────
   const handleLogin = useCallback(async (username) => {
@@ -1112,8 +1129,8 @@ export default function App() {
 
       {/* Content */}
       <main style={styles.main}>
-        {activeTab === 0 && <DashboardTab positions={positions} users={users} />}
-        {activeTab === 1 && <PositionsTab positions={positions} users={users} onEdit={handleEditPosition} />}
+        {activeTab === 0 && <DashboardTab positions={positions} users={users} prices={prices} />}
+        {activeTab === 1 && <PositionsTab positions={positions} users={users} onEdit={handleEditPosition} prices={prices} />}
       </main>
 
       {/* Modals */}
