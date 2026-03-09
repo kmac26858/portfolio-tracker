@@ -1,0 +1,39 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Environment — contains secrets, never commit
+.env
+
+# SQLite database file
+server/portfolio.db
+server/portfolio.db-wal
+server/portfolio.db-shm
+portfolio_plan.md
+
+# macOS metadata
+.DS_Store
+
+# Local Claude memory (project-specific AI notes)
+.claude/
