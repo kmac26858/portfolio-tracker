@@ -18,6 +18,8 @@ import cors from "cors";
 import authRoutes from "./routes/auth.js";
 import portfolioRoutes from "./routes/portfolio.js";
 import pricesRoutes from "./routes/prices.js";
+import snapshotsRoutes from "./routes/snapshots.js";
+import activitiesRoutes from "./routes/activities.js";
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -37,6 +39,8 @@ app.use(express.json({ limit: "2mb" }));
 app.use("/api/auth", authRoutes);
 app.use("/api/portfolio", portfolioRoutes);
 app.use("/api/prices", pricesRoutes);
+app.use("/api/snapshots", snapshotsRoutes);
+app.use("/api/activities", activitiesRoutes);
 
 // ── Global error handler — never leak stack traces to clients ─────────────────
 // eslint-disable-next-line no-unused-vars

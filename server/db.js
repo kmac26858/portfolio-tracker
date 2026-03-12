@@ -27,4 +27,39 @@ db.exec(`
   );
 `);
 
+// Activities table — manual BUY/SELL log, independent of positions
+db.exec(`
+  CREATE TABLE IF NOT EXISTS activities (
+    id         TEXT    PRIMARY KEY,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    action     TEXT    NOT NULL CHECK(action IN ('BUY','SELL')),
+    ticker     TEXT    NOT NULL COLLATE NOCASE,
+    shares     REAL    NOT NULL,
+    price      REAL    NOT NULL,
+    date       TEXT    NOT NULL,
+    brokerage  TEXT    NOT NULL DEFAULT '',
+    owner      TEXT    NOT NULL DEFAULT '',
+    notes      TEXT    NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+  );
+`);
+
+// Snapshots table — one row per user per Monday date
+db.exec(`
+  CREATE TABLE IF NOT EXISTS snapshots (
+    user_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    date     TEXT    NOT NULL,
+    value    REAL    NOT NULL,
+    PRIMARY KEY (user_id, date)
+  );
+`);
+
+// Safe migrations — add new asset columns if they don't exist yet
+const existingCols = db.pragma("table_info(portfolios)").map((c) => c.name);
+for (const col of ["crypto", "cash", "house"]) {
+  if (!existingCols.includes(col)) {
+    db.exec(`ALTER TABLE portfolios ADD COLUMN ${col} TEXT NOT NULL DEFAULT '[]'`);
+  }
+}
+
 export default db;

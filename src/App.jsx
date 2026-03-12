@@ -1,10 +1,11 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from "react";
-import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer } from "recharts";
+import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid } from "recharts";
 import { Plus, Trash2, ChevronDown, ChevronRight, Download, Upload, X, TrendingUp, TrendingDown, DollarSign, Users, LogOut, Lock, Pencil, FileSpreadsheet, Settings } from "lucide-react";
 
 // prices are fetched live from /api/prices — see App component
 
-const BROKERAGES = ["Robinhood", "eTrade", "Fidelity", "Schwab", "Vanguard"];
+const BROKERAGES       = ["Robinhood", "eTrade", "Fidelity", "Schwab", "Vanguard"];
+const CRYPTO_EXCHANGES = ["Coinbase", "Kraken", "Binance", "Gemini", "Robinhood", "Fidelity"];
 const CHART_COLORS = ["#00ff88", "#00c4ff", "#ff6b35", "#ffd700", "#c084fc", "#fb7185", "#34d399", "#f472b6"];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -697,7 +698,7 @@ function PositionsTab({ positions, users, onEdit, prices }) {
 }
 
 // ── Dashboard Tab ─────────────────────────────────────────────────────────────
-function DashboardTab({ positions, users, prices }) {
+function DashboardTab({ positions, users, prices, snapshots }) {
   const getPrice = (ticker) => prices[ticker] ?? 0;
   const grouped = useMemo(() => {
     const map = {};
@@ -776,9 +777,12 @@ function DashboardTab({ positions, users, prices }) {
           icon={overallGL >= 0 ? <TrendingUp size={14} /> : <TrendingDown size={14} />} />
         <KPI label="INVESTORS" value={users.length} icon={<Users size={14} />} />
       </div>
+      <div style={{ marginBottom: 16 }}>
+        <PortfolioGrowthChart snapshots={snapshots} />
+      </div>
       <div style={styles.chartsGrid}>
         <ChartCard title="PORTFOLIO BY INVESTOR" data={byOwner} />
-        <ChartCard title="HOLDINGS BREAKDOWN" data={byTicker} />
+        <ChartCard title="HOLDINGS BREAKDOWN" data={byTicker} hideLegend={["Others"]} />
         <ChartCard title="STOCK vs ETF vs ESPP" data={byType} />
         <ChartCard title="LONG TERM vs SHORT TERM" data={byTerm} />
       </div>
@@ -815,7 +819,22 @@ const makeTooltip = (data) => ({ active, payload }) => {
   );
 };
 
-function ChartCard({ title, data }) {
+function ChartCard({ title, data, hideLegend = [] }) {
+  const legendContent = hideLegend.length > 0
+    ? ({ payload }) => (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 12px", justifyContent: "center", paddingTop: 8 }}>
+          {(payload || [])
+            .filter((p) => !hideLegend.includes(p.value))
+            .map((p, i) => (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                <div style={{ width: 8, height: 8, borderRadius: "50%", background: p.color, flexShrink: 0 }} />
+                <span style={{ fontFamily: "monospace", fontSize: 11, color: "#94a3b8" }}>{p.value}</span>
+              </div>
+            ))}
+        </div>
+      )
+    : undefined;
+
   return (
     <div style={styles.chartCard}>
       <div style={styles.chartTitle}>{title}</div>
@@ -827,11 +846,747 @@ function ChartCard({ title, data }) {
           </Pie>
           <Tooltip content={makeTooltip(data)} />
           <Legend
-            formatter={(val) => <span style={{ fontFamily: "monospace", fontSize: 11, color: "#94a3b8" }}>{val}</span>}
+            content={legendContent}
+            formatter={legendContent ? undefined : (val) => <span style={{ fontFamily: "monospace", fontSize: 11, color: "#94a3b8" }}>{val}</span>}
             iconType="circle" iconSize={8}
           />
         </PieChart>
       </ResponsiveContainer>
+    </div>
+  );
+}
+
+// ── Portfolio Growth Chart ────────────────────────────────────────────────────
+const fmtShort = (v) => {
+  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(1)}M`;
+  if (v >= 1_000)     return `$${(v / 1_000).toFixed(0)}K`;
+  return `$${v.toFixed(0)}`;
+};
+
+const GROWTH_RANGES = [
+  { label: "1W",  days: 7 },
+  { label: "1M",  days: 30 },
+  { label: "1Y",  days: 365 },
+  { label: "ALL", days: null },
+];
+
+function PortfolioGrowthChart({ snapshots }) {
+  const [range, setRange] = useState("1M");
+
+  const allData = useMemo(() =>
+    [...(snapshots || [])].sort((a, b) => a.date.localeCompare(b.date)),
+    [snapshots]
+  );
+
+  const data = useMemo(() => {
+    const selected = GROWTH_RANGES.find((r) => r.label === range);
+    if (!selected?.days) return allData;
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - selected.days);
+    const cutoffStr = cutoff.toISOString().slice(0, 10);
+    return allData.filter((s) => s.date >= cutoffStr);
+  }, [allData, range]);
+
+  const rangeGrowth = useMemo(() => {
+    if (data.length < 2) return null;
+    const first = data[0].value;
+    const last = data[data.length - 1].value;
+    return first > 0 ? ((last - first) / first) * 100 : null;
+  }, [data]);
+
+  const tickFmt = (d) => (range === "1Y" || range === "ALL") ? d.slice(0, 7) : d.slice(5);
+
+  const placeholder = (msg) => (
+    <div style={styles.chartCard}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div style={styles.chartTitle}>PORTFOLIO GROWTH</div>
+        <RangeSelector range={range} setRange={setRange} />
+      </div>
+      <div style={{ textAlign: "center", padding: "60px 0", color: "#334155", fontFamily: "monospace", fontSize: 11 }}>{msg}</div>
+    </div>
+  );
+
+  if (!snapshots) return placeholder("LOADING...");
+  if (allData.length === 0) return placeholder("NO DATA YET — VISIT DAILY TO BUILD HISTORY");
+  if (data.length === 0) return placeholder(`NO DATA IN THIS RANGE — TRY A LONGER PERIOD`);
+  if (data.length === 1) return placeholder(`${data[0].date} · ${fmtDollar(data[0].value)} — NEED ≥ 2 DATA POINTS`);
+
+  return (
+    <div style={styles.chartCard}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
+          <div style={styles.chartTitle}>PORTFOLIO GROWTH</div>
+          {rangeGrowth !== null && (
+            <span style={{ fontFamily: "monospace", fontSize: 11, color: rangeGrowth >= 0 ? "#00ff88" : "#ff6b35" }}>
+              {rangeGrowth >= 0 ? "+" : ""}{fmt(rangeGrowth, 1)}%
+            </span>
+          )}
+        </div>
+        <RangeSelector range={range} setRange={setRange} />
+      </div>
+      <ResponsiveContainer width="100%" height={220}>
+        <LineChart data={data} margin={{ top: 4, right: 12, left: 4, bottom: 4 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#0f1e2e" />
+          <XAxis
+            dataKey="date"
+            tickFormatter={tickFmt}
+            interval="preserveStartEnd"
+            tick={{ fontFamily: "monospace", fontSize: 9, fill: "#334155" }}
+            axisLine={{ stroke: "#1e293b" }} tickLine={false}
+          />
+          <YAxis
+            tickFormatter={fmtShort}
+            tick={{ fontFamily: "monospace", fontSize: 9, fill: "#334155" }}
+            axisLine={false} tickLine={false} width={54}
+          />
+          <Tooltip
+            content={({ active, payload }) => {
+              if (!active || !payload?.length) return null;
+              const { date, value } = payload[0].payload;
+              const idx = data.findIndex((d) => d.date === date);
+              const prev = idx > 0 ? data[idx - 1] : null;
+              const chg = prev ? ((value - prev.value) / prev.value) * 100 : null;
+              return (
+                <div style={{ background: "#0f172a", border: "1px solid #1e293b", padding: "8px 14px", borderRadius: 6, fontFamily: "monospace", fontSize: 12 }}>
+                  <div style={{ color: "#94a3b8", marginBottom: 4 }}>{date}</div>
+                  <div style={{ color: "#00ff88" }}>{fmtDollar(value)}</div>
+                  {chg !== null && (
+                    <div style={{ fontSize: 11, color: chg >= 0 ? "#00ff88" : "#ff6b35", marginTop: 2 }}>
+                      {chg >= 0 ? "+" : ""}{fmt(chg, 1)}% prev day
+                    </div>
+                  )}
+                </div>
+              );
+            }}
+          />
+          <Line
+            type="monotone" dataKey="value" stroke="#00ff88" strokeWidth={2}
+            dot={data.length <= 30 ? { fill: "#00ff88", r: 3, strokeWidth: 0 } : false}
+            activeDot={{ r: 5, fill: "#00ff88", stroke: "#060b12", strokeWidth: 2 }}
+          />
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+function RangeSelector({ range, setRange }) {
+  return (
+    <div style={{ display: "flex", gap: 4 }}>
+      {GROWTH_RANGES.map(({ label }) => (
+        <button
+          key={label}
+          onClick={() => setRange(label)}
+          style={{
+            padding: "3px 10px", border: "1px solid",
+            borderColor: range === label ? "#00ff88" : "#1e293b",
+            borderRadius: 4, background: range === label ? "#00ff8818" : "none",
+            color: range === label ? "#00ff88" : "#475569",
+            fontFamily: "monospace", fontSize: 10, letterSpacing: 1, cursor: "pointer",
+          }}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ── Add Activity Modal ────────────────────────────────────────────────────────
+function AddActivityModal({ users, onAdd, onClose }) {
+  const [form, setForm] = useState({
+    action: "BUY",
+    ticker: "",
+    shares: "",
+    price: "",
+    date: new Date().toISOString().slice(0, 10),
+    brokerage: BROKERAGES[0],
+    owner: users[0],
+    notes: "",
+  });
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+  const total = (parseFloat(form.shares) || 0) * (parseFloat(form.price) || 0);
+
+  const handleSubmit = () => {
+    if (!form.ticker || !form.shares || !form.price) return;
+    onAdd({
+      id: uid(),
+      action: form.action,
+      ticker: form.ticker.toUpperCase(),
+      shares: parseFloat(form.shares),
+      price: parseFloat(form.price),
+      date: form.date,
+      brokerage: form.brokerage,
+      owner: form.owner,
+      notes: form.notes,
+    });
+    onClose();
+  };
+
+  return (
+    <div style={styles.overlay}>
+      <div style={{ ...styles.modal, width: 500 }}>
+        <div style={styles.modalHeader}>
+          <span style={{ ...styles.modalTitle, color: "#ffd700" }}>LOG ACTIVITY</span>
+          <button onClick={onClose} style={styles.iconBtn}><X size={16} /></button>
+        </div>
+
+        {/* BUY / SELL toggle */}
+        <div style={{ display: "flex", gap: 0, marginBottom: 20, background: "#060b12", borderRadius: 8, padding: 3, border: "1px solid #1e293b" }}>
+          {["BUY", "SELL"].map((a) => (
+            <button key={a} onClick={() => set("action", a)} style={{
+              flex: 1, padding: "8px 0", border: "none", cursor: "pointer",
+              fontFamily: "monospace", fontSize: 12, letterSpacing: 2, borderRadius: 6, transition: "all 0.2s",
+              background: form.action === a ? "#0a1628" : "transparent",
+              color: form.action === a ? (a === "BUY" ? "#00ff88" : "#ff6b35") : "#334155",
+              boxShadow: form.action === a ? "0 0 0 1px #1e293b" : "none",
+            }}>{a}</button>
+          ))}
+        </div>
+
+        <div style={styles.formGrid}>
+          <FormField label="TICKER" value={form.ticker} onChange={(v) => set("ticker", v.toUpperCase())} placeholder="e.g. AAPL" />
+          <FormField label="DATE" value={form.date} onChange={(v) => set("date", v)} type="date" />
+          <FormField label="SHARES" value={form.shares} onChange={(v) => set("shares", v)} type="number" placeholder="0" />
+          <FormField label="PRICE / SHARE" value={form.price} onChange={(v) => set("price", v)} type="number" placeholder="0.00" prefix="$" />
+          <div style={styles.fieldFull}>
+            <span style={styles.label}>TOTAL VALUE</span>
+            <div style={{ ...styles.input, background: "#0d1117", color: "#ffd700", cursor: "default" }}>{fmtDollar(total)}</div>
+          </div>
+          <div>
+            <span style={styles.label}>BROKERAGE</span>
+            <select value={form.brokerage} onChange={(e) => set("brokerage", e.target.value)} style={styles.select}>
+              {BROKERAGES.map((b) => <option key={b}>{b}</option>)}
+            </select>
+          </div>
+          <div>
+            <span style={styles.label}>OWNER</span>
+            <select value={form.owner} onChange={(e) => set("owner", e.target.value)} style={styles.select}>
+              {users.map((u) => <option key={u}>{u}</option>)}
+            </select>
+          </div>
+          <div style={styles.fieldFull}>
+            <span style={styles.label}>NOTES (optional)</span>
+            <input value={form.notes} onChange={(e) => set("notes", e.target.value)}
+              placeholder="e.g. Dividend reinvestment, earnings play..." style={styles.input} />
+          </div>
+        </div>
+
+        <button
+          style={{ ...styles.btnPrimary, borderColor: "#ffd700", color: "#ffd700", background: "#ffd70018" }}
+          onClick={handleSubmit}
+        >
+          LOG {form.action} →
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Activity Tab ──────────────────────────────────────────────────────────────
+function ActivityTab({ activities, onDelete }) {
+  if (activities.length === 0) {
+    return (
+      <div style={{ textAlign: "center", padding: "80px 0", color: "#334155" }}>
+        <div style={{ fontSize: 48, marginBottom: 16 }}>◎</div>
+        <div style={{ fontFamily: "monospace", fontSize: 14 }}>NO ACTIVITY — LOG ONE ABOVE</div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 0.7fr 1fr 1fr 1fr 1.2fr 1fr 1fr 1.5fr 0.4fr", padding: "10px 16px", marginBottom: 4 }}>
+        {["DATE", "ACTION", "TICKER", "SHARES", "PRICE", "TOTAL", "BROKERAGE", "OWNER", "NOTES", ""].map((h) => (
+          <div key={h} style={styles.th}>{h}</div>
+        ))}
+      </div>
+      {activities.map((a) => {
+        const isBuy = a.action === "BUY";
+        const total = a.shares * a.price;
+        return (
+          <div key={a.id} style={{
+            display: "grid", gridTemplateColumns: "1fr 0.7fr 1fr 1fr 1fr 1.2fr 1fr 1fr 1.5fr 0.4fr",
+            padding: "12px 16px", background: "#0a1628", border: "1px solid #0f1e2e",
+            borderRadius: 8, marginBottom: 4, alignItems: "center",
+          }}>
+            <div style={styles.tdSm}>{a.date}</div>
+            <div>
+              <span style={{
+                fontFamily: "monospace", fontSize: 11, fontWeight: 700, letterSpacing: 1,
+                color: isBuy ? "#00ff88" : "#ff6b35",
+                background: isBuy ? "#00ff8815" : "#ff6b3515",
+                border: `1px solid ${isBuy ? "#00ff8830" : "#ff6b3530"}`,
+                padding: "2px 8px", borderRadius: 4,
+              }}>{a.action}</span>
+            </div>
+            <div style={{ ...styles.tickerBadge, fontSize: 13 }}>{a.ticker}</div>
+            <div style={styles.tdSm}>{fmt(a.shares, 4)}</div>
+            <div style={styles.tdSm}>{fmtDollar(a.price)}</div>
+            <div style={{ ...styles.tdSm, color: isBuy ? "#00ff88" : "#ff6b35" }}>{fmtDollar(total)}</div>
+            <div style={styles.tdSm}>{a.brokerage || "—"}</div>
+            <div style={styles.tdSm}>{a.owner || "—"}</div>
+            <div style={{ ...styles.tdSm, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={a.notes}>
+              {a.notes || <span style={{ color: "#1e293b" }}>—</span>}
+            </div>
+            <div>
+              <button onClick={() => onDelete(a.id)}
+                style={{ background: "none", border: "1px solid #1e293b", borderRadius: 4, padding: "2px 6px", cursor: "pointer", color: "#475569", display: "flex", alignItems: "center" }}
+                title="Delete">
+                <Trash2 size={11} />
+              </button>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Stocks Tab (wrapper with POSITIONS / ACTIVITY sub-tabs) ───────────────────
+function StocksTab({ stocksSubTab, onSubTab, positions, activities, users, onEdit, prices, onDeleteActivity }) {
+  const activityCount = activities.length;
+  return (
+    <div>
+      {/* Sub-tab bar */}
+      <div style={{ display: "flex", gap: 0, marginBottom: 24, borderBottom: "1px solid #0f1e2e" }}>
+        {[
+          { key: "POSITIONS", badge: [...new Set(positions.map((p) => p.ticker))].length || null },
+          { key: "ACTIVITY",  badge: activityCount || null },
+        ].map(({ key, badge }) => (
+          <button key={key} onClick={() => onSubTab(key)} style={{
+            padding: "10px 18px", background: "none", border: "none", cursor: "pointer",
+            fontFamily: "monospace", fontSize: 11, letterSpacing: 2,
+            color: stocksSubTab === key ? "#e2e8f0" : "#334155",
+            borderBottom: `2px solid ${stocksSubTab === key ? "#00ff88" : "transparent"}`,
+            marginBottom: -1, display: "flex", alignItems: "center", gap: 8,
+            transition: "color 0.2s",
+          }}>
+            {key}
+            {badge != null && badge > 0 && (
+              <span style={styles.tabBadge}>{badge}</span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {stocksSubTab === "POSITIONS" && (
+        <PositionsTab positions={positions} users={users} onEdit={onEdit} prices={prices} />
+      )}
+      {stocksSubTab === "ACTIVITY" && (
+        <ActivityTab activities={activities} onDelete={onDeleteActivity} />
+      )}
+    </div>
+  );
+}
+
+// ── Crypto Modal ──────────────────────────────────────────────────────────────
+function CryptoModal({ users, onAdd, onClose, editItem = null }) {
+  const [form, setForm] = useState({
+    coin: editItem?.coin ?? "",
+    ticker: editItem?.ticker ?? "",
+    exchange: editItem?.exchange ?? CRYPTO_EXCHANGES[0],
+    owner: editItem?.owner ?? users[0],
+    amount: editItem?.amount ? String(editItem.amount) : "",
+    costPerCoin: editItem?.costPerCoin ? String(editItem.costPerCoin) : "",
+    purchaseDate: editItem?.purchaseDate ?? new Date().toISOString().slice(0, 10),
+  });
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+  const totalCost = (parseFloat(form.amount) || 0) * (parseFloat(form.costPerCoin) || 0);
+
+  const handleSubmit = () => {
+    if (!form.ticker || !form.amount || !form.costPerCoin) return;
+    onAdd({
+      ...(editItem || {}),
+      id: editItem?.id ?? uid(),
+      coin: form.coin || form.ticker.toUpperCase(),
+      ticker: form.ticker.toUpperCase(),
+      exchange: form.exchange,
+      owner: form.owner,
+      amount: parseFloat(form.amount),
+      costPerCoin: parseFloat(form.costPerCoin),
+      totalCost,
+      purchaseDate: form.purchaseDate,
+    });
+    onClose();
+  };
+
+  return (
+    <div style={styles.overlay}>
+      <div style={{ ...styles.modal, width: 480 }}>
+        <div style={styles.modalHeader}>
+          <span style={{ ...styles.modalTitle, color: "#c084fc" }}>{editItem ? "EDIT CRYPTO" : "ADD CRYPTO"}</span>
+          <button onClick={onClose} style={styles.iconBtn}><X size={16} /></button>
+        </div>
+        <div style={styles.formGrid}>
+          <FormField label="TICKER (e.g. BTC)" value={form.ticker} onChange={(v) => set("ticker", v.toUpperCase())} placeholder="BTC" />
+          <FormField label="COIN NAME (optional)" value={form.coin} onChange={(v) => set("coin", v)} placeholder="Bitcoin" />
+          <FormField label="AMOUNT (units)" value={form.amount} onChange={(v) => set("amount", v)} type="number" placeholder="0.00" />
+          <FormField label="COST / COIN" value={form.costPerCoin} onChange={(v) => set("costPerCoin", v)} type="number" placeholder="0.00" prefix="$" />
+          <div style={styles.fieldFull}>
+            <span style={styles.label}>TOTAL COST BASIS</span>
+            <div style={{ ...styles.input, background: "#0d1117", color: "#c084fc", cursor: "default" }}>{fmtDollar(totalCost)}</div>
+          </div>
+          <div>
+            <span style={styles.label}>EXCHANGE</span>
+            <select value={form.exchange} onChange={(e) => set("exchange", e.target.value)} style={styles.select}>
+              {CRYPTO_EXCHANGES.map((b) => <option key={b}>{b}</option>)}
+            </select>
+          </div>
+          <div>
+            <span style={styles.label}>OWNER</span>
+            <select value={form.owner} onChange={(e) => set("owner", e.target.value)} style={styles.select}>
+              {users.map((u) => <option key={u}>{u}</option>)}
+            </select>
+          </div>
+          <div style={styles.fieldFull}>
+            <FormField label="PURCHASE DATE" value={form.purchaseDate} onChange={(v) => set("purchaseDate", v)} type="date" />
+          </div>
+        </div>
+        <button style={{ ...styles.btnPrimary, borderColor: "#c084fc", color: "#c084fc", background: "#c084fc18" }} onClick={handleSubmit}>
+          {editItem ? "SAVE CHANGES →" : "ADD CRYPTO →"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Cash Modal ────────────────────────────────────────────────────────────────
+const CASH_TYPES = ["Savings", "Checking", "Money Market", "CD", "Treasury Bill"];
+
+function CashModal({ users, onAdd, onClose, editItem = null }) {
+  const [form, setForm] = useState({
+    institution: editItem?.institution ?? "",
+    accountType: editItem?.accountType ?? CASH_TYPES[0],
+    owner: editItem?.owner ?? users[0],
+    balance: editItem?.balance ? String(editItem.balance) : "",
+    apy: editItem?.apy ? String(editItem.apy) : "",
+  });
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+
+  const handleSubmit = () => {
+    if (!form.institution || !form.balance) return;
+    onAdd({
+      ...(editItem || {}),
+      id: editItem?.id ?? uid(),
+      institution: form.institution,
+      accountType: form.accountType,
+      owner: form.owner,
+      balance: parseFloat(form.balance),
+      apy: parseFloat(form.apy) || 0,
+    });
+    onClose();
+  };
+
+  return (
+    <div style={styles.overlay}>
+      <div style={{ ...styles.modal, width: 460 }}>
+        <div style={styles.modalHeader}>
+          <span style={{ ...styles.modalTitle, color: "#34d399" }}>{editItem ? "EDIT CASH ACCOUNT" : "ADD CASH ACCOUNT"}</span>
+          <button onClick={onClose} style={styles.iconBtn}><X size={16} /></button>
+        </div>
+        <div style={styles.formGrid}>
+          <div style={styles.fieldFull}>
+            <FormField label="INSTITUTION / BANK" value={form.institution} onChange={(v) => set("institution", v)} placeholder="e.g. Chase, Ally Bank" />
+          </div>
+          <div>
+            <span style={styles.label}>ACCOUNT TYPE</span>
+            <select value={form.accountType} onChange={(e) => set("accountType", e.target.value)} style={styles.select}>
+              {CASH_TYPES.map((t) => <option key={t}>{t}</option>)}
+            </select>
+          </div>
+          <div>
+            <span style={styles.label}>OWNER</span>
+            <select value={form.owner} onChange={(e) => set("owner", e.target.value)} style={styles.select}>
+              {users.map((u) => <option key={u}>{u}</option>)}
+            </select>
+          </div>
+          <FormField label="BALANCE ($)" value={form.balance} onChange={(v) => set("balance", v)} type="number" placeholder="0.00" prefix="$" />
+          <FormField label="APY (%)" value={form.apy} onChange={(v) => set("apy", v)} type="number" placeholder="0.00" />
+        </div>
+        <button style={{ ...styles.btnPrimary, borderColor: "#34d399", color: "#34d399", background: "#34d39918" }} onClick={handleSubmit}>
+          {editItem ? "SAVE CHANGES →" : "ADD ACCOUNT →"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── House Modal ───────────────────────────────────────────────────────────────
+function HouseModal({ users, onAdd, onClose, editItem = null }) {
+  const [form, setForm] = useState({
+    name: editItem?.name ?? "",
+    purchasePrice: editItem?.purchasePrice ? String(editItem.purchasePrice) : "",
+    currentValue: editItem?.currentValue ? String(editItem.currentValue) : "",
+    mortgageBalance: editItem?.mortgageBalance ? String(editItem.mortgageBalance) : "",
+    owner: editItem?.owner ?? users[0],
+    purchaseDate: editItem?.purchaseDate ?? new Date().toISOString().slice(0, 10),
+  });
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+  const equity = (parseFloat(form.currentValue) || 0) - (parseFloat(form.mortgageBalance) || 0);
+
+  const handleSubmit = () => {
+    if (!form.name || !form.purchasePrice) return;
+    onAdd({
+      ...(editItem || {}),
+      id: editItem?.id ?? uid(),
+      name: form.name,
+      purchasePrice: parseFloat(form.purchasePrice),
+      currentValue: parseFloat(form.currentValue) || parseFloat(form.purchasePrice),
+      mortgageBalance: parseFloat(form.mortgageBalance) || 0,
+      owner: form.owner,
+      purchaseDate: form.purchaseDate,
+    });
+    onClose();
+  };
+
+  return (
+    <div style={styles.overlay}>
+      <div style={{ ...styles.modal, width: 480 }}>
+        <div style={styles.modalHeader}>
+          <span style={{ ...styles.modalTitle, color: "#fbbf24" }}>{editItem ? "EDIT PROPERTY" : "ADD PROPERTY"}</span>
+          <button onClick={onClose} style={styles.iconBtn}><X size={16} /></button>
+        </div>
+        <div style={styles.formGrid}>
+          <div style={styles.fieldFull}>
+            <FormField label="PROPERTY NAME / ADDRESS" value={form.name} onChange={(v) => set("name", v)} placeholder="e.g. 123 Main St, Primary Home" />
+          </div>
+          <FormField label="PURCHASE PRICE" value={form.purchasePrice} onChange={(v) => set("purchasePrice", v)} type="number" placeholder="0.00" prefix="$" />
+          <FormField label="CURRENT VALUE (estimate)" value={form.currentValue} onChange={(v) => set("currentValue", v)} type="number" placeholder="0.00" prefix="$" />
+          <FormField label="MORTGAGE BALANCE" value={form.mortgageBalance} onChange={(v) => set("mortgageBalance", v)} type="number" placeholder="0.00" prefix="$" />
+          <div>
+            <span style={styles.label}>NET EQUITY</span>
+            <div style={{ ...styles.input, background: "#0d1117", color: equity >= 0 ? "#fbbf24" : "#ff6b35", cursor: "default" }}>{fmtDollar(equity)}</div>
+          </div>
+          <FormField label="PURCHASE DATE" value={form.purchaseDate} onChange={(v) => set("purchaseDate", v)} type="date" />
+          <div>
+            <span style={styles.label}>OWNER</span>
+            <select value={form.owner} onChange={(e) => set("owner", e.target.value)} style={styles.select}>
+              {users.map((u) => <option key={u}>{u}</option>)}
+            </select>
+          </div>
+        </div>
+        <button style={{ ...styles.btnPrimary, borderColor: "#fbbf24", color: "#fbbf24", background: "#fbbf2418" }} onClick={handleSubmit}>
+          {editItem ? "SAVE CHANGES →" : "ADD PROPERTY →"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Crypto Tab ────────────────────────────────────────────────────────────────
+function CryptoTab({ crypto, users, onEdit, onDelete, cryptoPrices }) {
+  const getPrice = (ticker) => cryptoPrices[`${ticker}-USD`] ?? cryptoPrices[ticker] ?? 0;
+  const [editingItem, setEditingItem] = useState(null);
+
+  const rows = useMemo(() => {
+    const map = {};
+    crypto.forEach((c) => {
+      if (!map[c.ticker]) map[c.ticker] = { ticker: c.ticker, coin: c.coin || c.ticker, items: [] };
+      map[c.ticker].items.push(c);
+    });
+    return Object.values(map).map(({ ticker, coin, items }) => {
+      const totalAmount = items.reduce((s, i) => s + i.amount, 0);
+      const totalCost = items.reduce((s, i) => s + i.totalCost, 0);
+      const lastPrice = getPrice(ticker);
+      const currentValue = totalAmount * lastPrice;
+      const gainLoss = currentValue - totalCost;
+      const gainPct = totalCost > 0 ? (gainLoss / totalCost) * 100 : 0;
+      return { ticker, coin, items, totalAmount, totalCost, lastPrice, currentValue, gainLoss, gainPct };
+    }).sort((a, b) => b.currentValue - a.currentValue);
+  }, [crypto, cryptoPrices]);
+
+  const totalValue = rows.reduce((s, r) => s + r.currentValue, 0);
+  const totalCost = rows.reduce((s, r) => s + r.totalCost, 0);
+  const totalGL = totalValue - totalCost;
+
+  if (crypto.length === 0) {
+    return (
+      <div style={{ textAlign: "center", padding: "80px 0", color: "#334155" }}>
+        <div style={{ fontSize: 48, marginBottom: 16 }}>₿</div>
+        <div style={{ fontFamily: "monospace", fontSize: 14 }}>NO CRYPTO — ADD ONE ABOVE</div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div style={styles.kpiStrip}>
+        <KPI label="CRYPTO VALUE" value={fmtDollar(totalValue)} accent="#c084fc" icon={<DollarSign size={14} />} />
+        <KPI label="TOTAL COST" value={fmtDollar(totalCost)} accent="#c084fc" icon={<DollarSign size={14} />} />
+        <KPI label="TOTAL GAIN/LOSS" value={fmtDollar(totalGL)}
+          subValue={fmtPct(totalCost > 0 ? (totalGL / totalCost) * 100 : 0)}
+          accent={totalGL >= 0 ? "#00ff88" : "#ff6b35"}
+          icon={totalGL >= 0 ? <TrendingUp size={14} /> : <TrendingDown size={14} />} />
+        <KPI label="ASSETS" value={rows.length} accent="#c084fc" icon={<Users size={14} />} />
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr 1.2fr 1.2fr 1.4fr 0.4fr", padding: "10px 16px", marginBottom: 4 }}>
+        {["COIN", "PRICE", "AMOUNT", "AVG COST", "COST BASIS", "CURR VALUE", "GAIN/LOSS", ""].map((h) => (
+          <div key={h} style={styles.th}>{h}</div>
+        ))}
+      </div>
+      {rows.map((row) => (
+        <div key={row.ticker} style={{ marginBottom: 4 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr 1.2fr 1.2fr 1.4fr 0.4fr", padding: "14px 16px", background: "#0a1628", border: "1px solid #0f1e2e", borderRadius: 8, alignItems: "center" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ ...styles.tickerBadge, color: "#c084fc" }}>{row.ticker}</span>
+              {row.coin !== row.ticker && <span style={{ fontSize: 11, color: "#475569" }}>{row.coin}</span>}
+            </div>
+            <div style={styles.td}>{row.lastPrice > 0 ? fmtDollar(row.lastPrice) : "—"}</div>
+            <div style={styles.td}>{fmt(row.totalAmount, 6)}</div>
+            <div style={styles.td}>{row.totalAmount > 0 ? fmtDollar(row.totalCost / row.totalAmount) : "—"}</div>
+            <div style={styles.td}>{fmtDollar(row.totalCost)}</div>
+            <div style={styles.td}>{row.currentValue > 0 ? fmtDollar(row.currentValue) : "—"}</div>
+            <div style={{ ...styles.td, color: row.gainLoss >= 0 ? "#00ff88" : "#ff6b35", display: "flex", alignItems: "baseline", gap: 6 }}>
+              {row.currentValue > 0
+                ? <><span>{fmtDollar(row.gainLoss)}</span><span style={{ fontSize: 11, opacity: 0.8 }}>{fmtPct(row.gainPct)}</span></>
+                : "—"}
+            </div>
+            <div style={{ display: "flex", gap: 4 }}>
+              <button onClick={() => setEditingItem(row.items[0])}
+                style={{ background: "none", border: "1px solid #1e293b", borderRadius: 4, padding: "2px 6px", cursor: "pointer", color: "#475569", display: "flex", alignItems: "center" }} title="Edit">
+                <Pencil size={11} />
+              </button>
+              <button onClick={() => onDelete(row.items[0].id)}
+                style={{ background: "none", border: "1px solid #1e293b", borderRadius: 4, padding: "2px 6px", cursor: "pointer", color: "#475569", display: "flex", alignItems: "center" }} title="Delete">
+                <Trash2 size={11} />
+              </button>
+            </div>
+          </div>
+        </div>
+      ))}
+      {editingItem && (
+        <CryptoModal users={users} editItem={editingItem}
+          onAdd={(updated) => { onEdit(updated); setEditingItem(null); }}
+          onClose={() => setEditingItem(null)} />
+      )}
+    </div>
+  );
+}
+
+// ── Cash Tab ──────────────────────────────────────────────────────────────────
+function CashTab({ cash, users, onEdit, onDelete }) {
+  const [editingItem, setEditingItem] = useState(null);
+  const totalBalance = cash.reduce((s, c) => s + c.balance, 0);
+  const avgApy = cash.length > 0 ? cash.reduce((s, c) => s + c.apy, 0) / cash.length : 0;
+
+  if (cash.length === 0) {
+    return (
+      <div style={{ textAlign: "center", padding: "80px 0", color: "#334155" }}>
+        <div style={{ fontSize: 48, marginBottom: 16 }}>◎</div>
+        <div style={{ fontFamily: "monospace", fontSize: 14 }}>NO CASH ACCOUNTS — ADD ONE ABOVE</div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div style={{ ...styles.kpiStrip, gridTemplateColumns: "repeat(3, 1fr)" }}>
+        <KPI label="TOTAL CASH" value={fmtDollar(totalBalance)} accent="#34d399" icon={<DollarSign size={14} />} />
+        <KPI label="ACCOUNTS" value={cash.length} accent="#34d399" icon={<Users size={14} />} />
+        <KPI label="AVG APY" value={`${fmt(avgApy, 2)}%`} accent="#34d399" icon={<TrendingUp size={14} />} />
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1.2fr 0.8fr 0.4fr", padding: "10px 16px", marginBottom: 4 }}>
+        {["INSTITUTION", "TYPE", "OWNER", "BALANCE", "APY", ""].map((h) => (
+          <div key={h} style={styles.th}>{h}</div>
+        ))}
+      </div>
+      {cash.map((item) => (
+        <div key={item.id} style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1.2fr 0.8fr 0.4fr", padding: "14px 16px", background: "#0a1628", border: "1px solid #0f1e2e", borderRadius: 8, marginBottom: 4, alignItems: "center" }}>
+          <div style={{ ...styles.tickerBadge, color: "#34d399", fontSize: 13 }}>{item.institution}</div>
+          <div style={styles.td}>{item.accountType}</div>
+          <div style={styles.td}>{item.owner}</div>
+          <div style={{ ...styles.td, color: "#34d399" }}>{fmtDollar(item.balance)}</div>
+          <div style={styles.td}>{item.apy > 0 ? `${fmt(item.apy, 2)}%` : "—"}</div>
+          <div style={{ display: "flex", gap: 4 }}>
+            <button onClick={() => setEditingItem(item)}
+              style={{ background: "none", border: "1px solid #1e293b", borderRadius: 4, padding: "2px 6px", cursor: "pointer", color: "#475569", display: "flex", alignItems: "center" }} title="Edit">
+              <Pencil size={11} />
+            </button>
+            <button onClick={() => onDelete(item.id)}
+              style={{ background: "none", border: "1px solid #1e293b", borderRadius: 4, padding: "2px 6px", cursor: "pointer", color: "#475569", display: "flex", alignItems: "center" }} title="Delete">
+              <Trash2 size={11} />
+            </button>
+          </div>
+        </div>
+      ))}
+      {editingItem && (
+        <CashModal users={users} editItem={editingItem}
+          onAdd={(updated) => { onEdit(updated); setEditingItem(null); }}
+          onClose={() => setEditingItem(null)} />
+      )}
+    </div>
+  );
+}
+
+// ── House Tab ─────────────────────────────────────────────────────────────────
+function HouseTab({ house, users, onEdit, onDelete }) {
+  const [editingItem, setEditingItem] = useState(null);
+  const totalValue = house.reduce((s, h) => s + h.currentValue, 0);
+  const totalEquity = house.reduce((s, h) => s + (h.currentValue - h.mortgageBalance), 0);
+  const totalCost = house.reduce((s, h) => s + h.purchasePrice, 0);
+  const totalGL = totalValue - totalCost;
+
+  if (house.length === 0) {
+    return (
+      <div style={{ textAlign: "center", padding: "80px 0", color: "#334155" }}>
+        <div style={{ fontSize: 48, marginBottom: 16 }}>⌂</div>
+        <div style={{ fontFamily: "monospace", fontSize: 14 }}>NO PROPERTIES — ADD ONE ABOVE</div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div style={styles.kpiStrip}>
+        <KPI label="TOTAL VALUE" value={fmtDollar(totalValue)} accent="#fbbf24" icon={<DollarSign size={14} />} />
+        <KPI label="NET EQUITY" value={fmtDollar(totalEquity)} accent="#fbbf24" icon={<DollarSign size={14} />} />
+        <KPI label="APPRECIATION" value={fmtDollar(totalGL)}
+          subValue={fmtPct(totalCost > 0 ? (totalGL / totalCost) * 100 : 0)}
+          accent={totalGL >= 0 ? "#00ff88" : "#ff6b35"}
+          icon={totalGL >= 0 ? <TrendingUp size={14} /> : <TrendingDown size={14} />} />
+        <KPI label="PROPERTIES" value={house.length} accent="#fbbf24" icon={<Users size={14} />} />
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "2.5fr 1fr 1.2fr 1.2fr 1.2fr 0.4fr", padding: "10px 16px", marginBottom: 4 }}>
+        {["PROPERTY", "OWNER", "PURCHASE PRICE", "CURR VALUE", "NET EQUITY", ""].map((h) => (
+          <div key={h} style={styles.th}>{h}</div>
+        ))}
+      </div>
+      {house.map((item) => {
+        const equity = item.currentValue - item.mortgageBalance;
+        const gl = item.currentValue - item.purchasePrice;
+        const glPct = item.purchasePrice > 0 ? (gl / item.purchasePrice) * 100 : 0;
+        return (
+          <div key={item.id} style={{ display: "grid", gridTemplateColumns: "2.5fr 1fr 1.2fr 1.2fr 1.2fr 0.4fr", padding: "14px 16px", background: "#0a1628", border: "1px solid #0f1e2e", borderRadius: 8, marginBottom: 4, alignItems: "center" }}>
+            <div>
+              <div style={{ ...styles.tickerBadge, color: "#fbbf24", fontSize: 13 }}>{item.name}</div>
+              <div style={{ fontSize: 11, color: "#475569", marginTop: 2 }}>{item.purchaseDate}</div>
+            </div>
+            <div style={styles.td}>{item.owner}</div>
+            <div style={styles.td}>{fmtDollar(item.purchasePrice)}</div>
+            <div style={{ ...styles.td, display: "flex", alignItems: "baseline", gap: 6 }}>
+              <span>{fmtDollar(item.currentValue)}</span>
+              <span style={{ fontSize: 11, color: gl >= 0 ? "#00ff88" : "#ff6b35", opacity: 0.8 }}>{fmtPct(glPct)}</span>
+            </div>
+            <div style={{ ...styles.td, color: equity >= 0 ? "#fbbf24" : "#ff6b35" }}>{fmtDollar(equity)}</div>
+            <div style={{ display: "flex", gap: 4 }}>
+              <button onClick={() => setEditingItem(item)}
+                style={{ background: "none", border: "1px solid #1e293b", borderRadius: 4, padding: "2px 6px", cursor: "pointer", color: "#475569", display: "flex", alignItems: "center" }} title="Edit">
+                <Pencil size={11} />
+              </button>
+              <button onClick={() => onDelete(item.id)}
+                style={{ background: "none", border: "1px solid #1e293b", borderRadius: 4, padding: "2px 6px", cursor: "pointer", color: "#475569", display: "flex", alignItems: "center" }} title="Delete">
+                <Trash2 size={11} />
+              </button>
+            </div>
+          </div>
+        );
+      })}
+      {editingItem && (
+        <HouseModal users={users} editItem={editingItem}
+          onAdd={(updated) => { onEdit(updated); setEditingItem(null); }}
+          onClose={() => setEditingItem(null)} />
+      )}
     </div>
   );
 }
@@ -845,26 +1600,52 @@ export default function App() {
   // Portfolio state
   const [users, setUsers] = useState(null);        // null = onboarding not done yet
   const [positions, setPositions] = useState([]);
+  const [crypto, setCrypto] = useState([]);
+  const [cash, setCash] = useState([]);
+  const [house, setHouse] = useState([]);
   const [prices, setPrices] = useState({});        // { AAPL: 213.49, ... }
+  const [cryptoPrices, setCryptoPrices] = useState({}); // { "BTC-USD": 97000, ... }
+  const [snapshots, setSnapshots] = useState(null); // null = not yet loaded; [] = loaded
+  const [activities, setActivities] = useState([]);
+  const [stocksSubTab, setStocksSubTab] = useState("POSITIONS");
+  const [showAddActivity, setShowAddActivity] = useState(false);
   const [activeTab, setActiveTab] = useState(0);
   const [showAdd, setShowAdd] = useState(false);
   const [showSell, setShowSell] = useState(false);
+  const [showAddCrypto, setShowAddCrypto] = useState(false);
+  const [showAddCash, setShowAddCash] = useState(false);
+  const [showAddHouse, setShowAddHouse] = useState(false);
+  const [showCsvImport, setShowCsvImport] = useState(false);
   const [showSettingsMenu, setShowSettingsMenu] = useState(false);
   const settingsMenuRef = useRef();
   const fileInputRef = useRef();
 
   // ── Save portfolio to server ─────────────────────────────────────────────────
-  // Debounced: fires 1.5 s after the last change so rapid mutations batch together.
+  // Uses a ref to always have the latest state without stale closures.
   const saveTimerRef = useRef(null);
-  const schedulePortfolioSave = useCallback((investorNames, nextPositions) => {
+  const portfolioRef = useRef({ users: [], positions: [], crypto: [], cash: [], house: [] });
+
+  const schedulePortfolioSave = useCallback(() => {
     clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(() => {
+      const d = portfolioRef.current;
       apiFetch("/api/portfolio", {
         method: "PUT",
-        body: JSON.stringify({ investorNames, positions: nextPositions }),
+        body: JSON.stringify({
+          investorNames: d.users,
+          positions: d.positions,
+          crypto: d.crypto,
+          cash: d.cash,
+          house: d.house,
+        }),
       }).catch((err) => console.warn("[portfolio save]", err.message));
     }, 1500);
   }, []);
+
+  // ── Keep portfolioRef in sync so the save callback always has fresh data ─────
+  useEffect(() => {
+    portfolioRef.current = { users: users || [], positions, crypto, cash, house };
+  }, [users, positions, crypto, cash, house]);
 
   // ── Check existing session on mount ─────────────────────────────────────────
   useEffect(() => {
@@ -873,9 +1654,18 @@ export default function App() {
         const me = await apiFetch("/api/auth/me");
         setAuthUser(me);
 
-        const portfolio = await apiFetch("/api/portfolio");
+        const [portfolio, snaps, actData] = await Promise.all([
+          apiFetch("/api/portfolio"),
+          apiFetch("/api/snapshots"),
+          apiFetch("/api/activities"),
+        ]);
         if (portfolio.investorNames?.length > 0) setUsers(portfolio.investorNames);
         setPositions(portfolio.positions || []);
+        setCrypto(portfolio.crypto || []);
+        setCash(portfolio.cash || []);
+        setHouse(portfolio.house || []);
+        setSnapshots(snaps || []);
+        setActivities(actData.activities || []);
         setAuthState("authenticated");
       } catch {
         setAuthState("unauthenticated");
@@ -895,25 +1685,67 @@ export default function App() {
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
-  // ── Fetch live prices whenever the set of held tickers changes ───────────────
+  // ── Fetch live stock prices whenever held tickers change ─────────────────────
   useEffect(() => {
     const tickers = [...new Set(positions.map((p) => p.ticker))];
     if (tickers.length === 0) return;
-
     fetch(`/api/prices?tickers=${tickers.join(",")}`, { credentials: "include" })
       .then((r) => r.json())
       .then((data) => setPrices((prev) => ({ ...prev, ...data })))
-      .catch(() => {}); // keep showing last known prices on error
+      .catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [positions.map((p) => p.ticker).sort().join(",")]);
 
+  // ── Fetch live crypto prices whenever held crypto tickers change ──────────────
+  useEffect(() => {
+    const tickers = [...new Set(crypto.map((c) => `${c.ticker}-USD`))];
+    if (tickers.length === 0) return;
+    fetch(`/api/prices?tickers=${tickers.join(",")}`, { credentials: "include" })
+      .then((r) => r.json())
+      .then((data) => setCryptoPrices((prev) => ({ ...prev, ...data })))
+      .catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [crypto.map((c) => c.ticker).sort().join(",")]);
+
+  // ── Daily auto-snapshot ──────────────────────────────────────────────────────
+  // Once prices are loaded, save today's portfolio value if not already snapped today.
+  const hasSnappedRef = useRef(false);
+  useEffect(() => {
+    if (snapshots === null || positions.length === 0 || Object.keys(prices).length === 0) return;
+    if (hasSnappedRef.current) return;
+
+    const dateStr = new Date().toISOString().slice(0, 10);
+    if (snapshots.some((s) => s.date === dateStr)) return; // already snapped today
+
+    const totalValue = parseFloat(
+      positions.reduce((s, p) => s + p.shares * (prices[p.ticker] ?? 0), 0).toFixed(2)
+    );
+    if (totalValue === 0) return;
+
+    hasSnappedRef.current = true;
+    apiFetch("/api/snapshots", {
+      method: "PUT",
+      body: JSON.stringify({ date: dateStr, value: totalValue }),
+    })
+      .then(() => setSnapshots((prev) => [...(prev || []).filter((s) => s.date !== dateStr), { date: dateStr, value: totalValue }]))
+      .catch(() => { hasSnappedRef.current = false; });
+  }, [snapshots, positions, prices]);
+
   // ── Auth callbacks ───────────────────────────────────────────────────────────
   const handleLogin = useCallback(async (username) => {
-    // Existing user — load their saved portfolio
     try {
       const portfolio = await apiFetch("/api/portfolio");
       if (portfolio.investorNames?.length > 0) setUsers(portfolio.investorNames);
       setPositions(portfolio.positions || []);
+      setCrypto(portfolio.crypto || []);
+      setCash(portfolio.cash || []);
+      setHouse(portfolio.house || []);
+      const [snaps, actData] = await Promise.all([
+        apiFetch("/api/snapshots").catch(() => []),
+        apiFetch("/api/activities").catch(() => ({ activities: [] })),
+      ]);
+      setSnapshots(snaps || []);
+      setActivities(actData.activities || []);
     } catch {
       /* portfolio stays empty; user can add positions */
     }
@@ -935,6 +1767,12 @@ export default function App() {
     setAuthUser(null);
     setUsers(null);
     setPositions([]);
+    setCrypto([]);
+    setCash([]);
+    setHouse([]);
+    setSnapshots(null);
+    setActivities([]);
+    setStocksSubTab("POSITIONS");
     setActiveTab(0);
     setAuthState("unauthenticated");
   }, []);
@@ -942,25 +1780,28 @@ export default function App() {
   // ── Onboarding done — investor names set for the first time ─────────────────
   const handleOnboardingDone = useCallback((names) => {
     setUsers(names);
-    schedulePortfolioSave(names, []);
+    portfolioRef.current = { ...portfolioRef.current, users: names };
+    schedulePortfolioSave();
   }, [schedulePortfolioSave]);
 
   // ── Position mutations ───────────────────────────────────────────────────────
   const handleAddPosition = useCallback((pos) => {
     setPositions((prev) => {
       const next = [...prev, pos];
-      schedulePortfolioSave(users, next);
+      portfolioRef.current = { ...portfolioRef.current, positions: next };
+      schedulePortfolioSave();
       return next;
     });
-  }, [users, schedulePortfolioSave]);
+  }, [schedulePortfolioSave]);
 
   const handleEditPosition = useCallback((updated) => {
     setPositions((prev) => {
       const next = prev.map((p) => p.id === updated.id ? updated : p);
-      schedulePortfolioSave(users, next);
+      portfolioRef.current = { ...portfolioRef.current, positions: next };
+      schedulePortfolioSave();
       return next;
     });
-  }, [users, schedulePortfolioSave]);
+  }, [schedulePortfolioSave]);
 
   const handleSell = useCallback((ticker, lotShares, _sellDate) => {
     setPositions((prev) => {
@@ -970,19 +1811,124 @@ export default function App() {
         const newShares = Math.max(0, p.shares - sellQty);
         return { ...p, shares: newShares, totalCost: newShares * p.costPerShare };
       }).filter((p) => p.shares > 0);
-      schedulePortfolioSave(users, next);
+      portfolioRef.current = { ...portfolioRef.current, positions: next };
+      schedulePortfolioSave();
       return next;
     });
-  }, [users, schedulePortfolioSave]);
+  }, [schedulePortfolioSave]);
 
   // ── CSV bulk import ──────────────────────────────────────────────────────────
   const handleCsvImport = useCallback((newPositions) => {
     setPositions((prev) => {
       const next = [...prev, ...newPositions];
-      schedulePortfolioSave(users, next);
+      portfolioRef.current = { ...portfolioRef.current, positions: next };
+      schedulePortfolioSave();
       return next;
     });
-  }, [users, schedulePortfolioSave]);
+  }, [schedulePortfolioSave]);
+
+  // ── Crypto mutations ─────────────────────────────────────────────────────────
+  const handleAddCrypto = useCallback((item) => {
+    setCrypto((prev) => {
+      const next = [...prev, item];
+      portfolioRef.current = { ...portfolioRef.current, crypto: next };
+      schedulePortfolioSave();
+      return next;
+    });
+  }, [schedulePortfolioSave]);
+
+  const handleEditCrypto = useCallback((updated) => {
+    setCrypto((prev) => {
+      const next = prev.map((c) => c.id === updated.id ? updated : c);
+      portfolioRef.current = { ...portfolioRef.current, crypto: next };
+      schedulePortfolioSave();
+      return next;
+    });
+  }, [schedulePortfolioSave]);
+
+  const handleDeleteCrypto = useCallback((id) => {
+    setCrypto((prev) => {
+      const next = prev.filter((c) => c.id !== id);
+      portfolioRef.current = { ...portfolioRef.current, crypto: next };
+      schedulePortfolioSave();
+      return next;
+    });
+  }, [schedulePortfolioSave]);
+
+  // ── Cash mutations ───────────────────────────────────────────────────────────
+  const handleAddCash = useCallback((item) => {
+    setCash((prev) => {
+      const next = [...prev, item];
+      portfolioRef.current = { ...portfolioRef.current, cash: next };
+      schedulePortfolioSave();
+      return next;
+    });
+  }, [schedulePortfolioSave]);
+
+  const handleEditCash = useCallback((updated) => {
+    setCash((prev) => {
+      const next = prev.map((c) => c.id === updated.id ? updated : c);
+      portfolioRef.current = { ...portfolioRef.current, cash: next };
+      schedulePortfolioSave();
+      return next;
+    });
+  }, [schedulePortfolioSave]);
+
+  const handleDeleteCash = useCallback((id) => {
+    setCash((prev) => {
+      const next = prev.filter((c) => c.id !== id);
+      portfolioRef.current = { ...portfolioRef.current, cash: next };
+      schedulePortfolioSave();
+      return next;
+    });
+  }, [schedulePortfolioSave]);
+
+  // ── House mutations ──────────────────────────────────────────────────────────
+  const handleAddHouse = useCallback((item) => {
+    setHouse((prev) => {
+      const next = [...prev, item];
+      portfolioRef.current = { ...portfolioRef.current, house: next };
+      schedulePortfolioSave();
+      return next;
+    });
+  }, [schedulePortfolioSave]);
+
+  const handleEditHouse = useCallback((updated) => {
+    setHouse((prev) => {
+      const next = prev.map((h) => h.id === updated.id ? updated : h);
+      portfolioRef.current = { ...portfolioRef.current, house: next };
+      schedulePortfolioSave();
+      return next;
+    });
+  }, [schedulePortfolioSave]);
+
+  const handleDeleteHouse = useCallback((id) => {
+    setHouse((prev) => {
+      const next = prev.filter((h) => h.id !== id);
+      portfolioRef.current = { ...portfolioRef.current, house: next };
+      schedulePortfolioSave();
+      return next;
+    });
+  }, [schedulePortfolioSave]);
+
+  // ── Activity mutations (immediate API calls, no debounce) ─────────────────────
+  const handleAddActivity = useCallback(async (act) => {
+    try {
+      await apiFetch("/api/activities", { method: "POST", body: JSON.stringify(act) });
+      setActivities((prev) => [act, ...prev]);
+    } catch (err) {
+      console.warn("[activity save]", err.message);
+    }
+  }, []);
+
+  const handleDeleteActivity = useCallback(async (id) => {
+    try {
+      await apiFetch(`/api/activities/${id}`, { method: "DELETE" });
+      setActivities((prev) => prev.filter((a) => a.id !== id));
+    } catch (err) {
+      console.warn("[activity delete]", err.message);
+    }
+  }, []);
 
   const handleDownloadTemplate = () => {
     const ownerList = users.join(" / ");
@@ -1003,9 +1949,9 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
-  // ── JSON import / export (unchanged) ────────────────────────────────────────
+  // ── JSON import / export ─────────────────────────────────────────────────────
   const handleExport = () => {
-    const data = JSON.stringify({ users, positions }, null, 2);
+    const data = JSON.stringify({ users, positions, crypto, cash, house }, null, 2);
     const blob = new Blob([data], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -1019,10 +1965,10 @@ export default function App() {
     const reader = new FileReader();
     reader.onload = (ev) => {
       try {
-        const { users: u, positions: p } = JSON.parse(ev.target.result);
-        setUsers(u);
-        setPositions(p);
-        schedulePortfolioSave(u, p);
+        const { users: u, positions: p, crypto: cr = [], cash: ca = [], house: ho = [] } = JSON.parse(ev.target.result);
+        setUsers(u); setPositions(p); setCrypto(cr); setCash(ca); setHouse(ho);
+        portfolioRef.current = { users: u, positions: p, crypto: cr, cash: ca, house: ho };
+        schedulePortfolioSave();
       } catch { alert("Invalid portfolio file."); }
     };
     reader.readAsText(file);
@@ -1064,14 +2010,36 @@ export default function App() {
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <input ref={fileInputRef} type="file" accept=".json" onChange={handleImport} style={{ display: "none" }} />
 
-          {positions.length > 0 && (
+          {activeTab === 1 && stocksSubTab === "POSITIONS" && positions.length > 0 && (
             <button style={{ ...styles.btnSecondary, borderColor: "#ff6b35", color: "#ff6b35" }} onClick={() => setShowSell(true)}>
               <Trash2 size={13} /> SELL
             </button>
           )}
-          <button style={styles.btnPrimary} onClick={() => setShowAdd(true)}>
-            <Plus size={13} /> ADD POSITION
-          </button>
+          {(activeTab === 0 || (activeTab === 1 && stocksSubTab === "POSITIONS")) && (
+            <button style={styles.btnPrimary} onClick={() => setShowAdd(true)}>
+              <Plus size={13} /> ADD POSITION
+            </button>
+          )}
+          {activeTab === 1 && stocksSubTab === "ACTIVITY" && (
+            <button style={{ ...styles.btnPrimary, borderColor: "#ffd700", color: "#ffd700", background: "#ffd70018" }} onClick={() => setShowAddActivity(true)}>
+              <Plus size={13} /> LOG ACTIVITY
+            </button>
+          )}
+          {activeTab === 2 && (
+            <button style={{ ...styles.btnPrimary, borderColor: "#c084fc", color: "#c084fc", background: "#c084fc18" }} onClick={() => setShowAddCrypto(true)}>
+              <Plus size={13} /> ADD CRYPTO
+            </button>
+          )}
+          {activeTab === 3 && (
+            <button style={{ ...styles.btnPrimary, borderColor: "#34d399", color: "#34d399", background: "#34d39918" }} onClick={() => setShowAddCash(true)}>
+              <Plus size={13} /> ADD ACCOUNT
+            </button>
+          )}
+          {activeTab === 4 && (
+            <button style={{ ...styles.btnPrimary, borderColor: "#fbbf24", color: "#fbbf24", background: "#fbbf2418" }} onClick={() => setShowAddHouse(true)}>
+              <Plus size={13} /> ADD PROPERTY
+            </button>
+          )}
 
           {/* ── User area: username · gear · logout ── */}
           <div style={styles.divider} />
@@ -1092,6 +2060,9 @@ export default function App() {
 
               {showSettingsMenu && (
                 <div style={styles.settingsDropdown}>
+                  <button style={styles.dropdownItem} onClick={() => { setShowCsvImport(true); setShowSettingsMenu(false); }}>
+                    <FileSpreadsheet size={12} /> IMPORT CSV
+                  </button>
                   <button style={styles.dropdownItem} onClick={() => { fileInputRef.current.click(); setShowSettingsMenu(false); }}>
                     <Upload size={12} /> IMPORT JSON
                   </button>
@@ -1115,13 +2086,17 @@ export default function App() {
 
       {/* Tabs */}
       <div style={styles.tabBar}>
-        {["DASHBOARD", "POSITIONS"].map((tab, i) => (
-          <button key={tab} onClick={() => setActiveTab(i)}
+        {[
+          { label: "DASHBOARD", badge: null },
+          { label: "STOCKS",    badge: [...new Set(positions.map(p => p.ticker))].length || null },
+          { label: "CRYPTO",    badge: crypto.length || null },
+          { label: "CASH",      badge: cash.length || null },
+          { label: "HOUSE",     badge: house.length || null },
+        ].map(({ label, badge }, i) => (
+          <button key={label} onClick={() => setActiveTab(i)}
             style={{ ...styles.tab, ...(activeTab === i ? styles.tabActive : {}) }}>
-            {tab}
-            {i === 1 && positions.length > 0 && (
-              <span style={styles.tabBadge}>{[...new Set(positions.map(p => p.ticker))].length}</span>
-            )}
+            {label}
+            {badge != null && badge > 0 && <span style={styles.tabBadge}>{badge}</span>}
           </button>
         ))}
         <div style={styles.tabLine} />
@@ -1129,13 +2104,28 @@ export default function App() {
 
       {/* Content */}
       <main style={styles.main}>
-        {activeTab === 0 && <DashboardTab positions={positions} users={users} prices={prices} />}
-        {activeTab === 1 && <PositionsTab positions={positions} users={users} onEdit={handleEditPosition} prices={prices} />}
+        {activeTab === 0 && <DashboardTab positions={positions} users={users} prices={prices} snapshots={snapshots} />}
+        {activeTab === 1 && (
+          <StocksTab
+            stocksSubTab={stocksSubTab} onSubTab={setStocksSubTab}
+            positions={positions} activities={activities} users={users}
+            onEdit={handleEditPosition} prices={prices}
+            onDeleteActivity={handleDeleteActivity}
+          />
+        )}
+        {activeTab === 2 && <CryptoTab crypto={crypto} users={users} onEdit={handleEditCrypto} onDelete={handleDeleteCrypto} cryptoPrices={cryptoPrices} />}
+        {activeTab === 3 && <CashTab cash={cash} users={users} onEdit={handleEditCash} onDelete={handleDeleteCash} />}
+        {activeTab === 4 && <HouseTab house={house} users={users} onEdit={handleEditHouse} onDelete={handleDeleteHouse} />}
       </main>
 
       {/* Modals */}
       {showAdd && <AddPositionModal users={users} onAdd={handleAddPosition} onClose={() => setShowAdd(false)} />}
       {showSell && <SellPositionModal positions={positions} onSell={handleSell} onClose={() => setShowSell(false)} />}
+      {showAddCrypto && <CryptoModal users={users} onAdd={handleAddCrypto} onClose={() => setShowAddCrypto(false)} />}
+      {showAddCash && <CashModal users={users} onAdd={handleAddCash} onClose={() => setShowAddCash(false)} />}
+      {showAddHouse && <HouseModal users={users} onAdd={handleAddHouse} onClose={() => setShowAddHouse(false)} />}
+      {showAddActivity && <AddActivityModal users={users} onAdd={handleAddActivity} onClose={() => setShowAddActivity(false)} />}
+      {showCsvImport && <CsvImportModal users={users} onImport={handleCsvImport} onClose={() => setShowCsvImport(false)} />}
     </div>
   );
 }
